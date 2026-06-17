@@ -48,6 +48,10 @@ class PirataConfig:
     url_base: str = ""                # url del sitio (la usa el scraper per-bot)
     total_paginas: int | None = None  # tope de paginas (Draco); None en API bots
     max_workers: int = 8
+    headless: bool = True             # navegador sin cabeza. Default True: el
+                                      # backend corre en Sesion 0 (sin escritorio)
+                                      # y lo necesita. Override a False para
+                                      # depurar con navegador visible en escritorio.
     porcentaje_minimo: int = field(
         default_factory=lambda: _int_env("PORCENTAJE_MINIMO", 40)
     )

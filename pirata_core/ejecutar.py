@@ -17,8 +17,11 @@ Draco emite muchos lotes (uno por pagina, streaming); los bots API emiten uno
 solo (todo de golpe). ejecutar funciona igual para ambos.
 """
 
+import json
+import os
 import sys
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .cache import (
@@ -58,12 +61,81 @@ def _key(c):
     return (c.get("scryfall_id"), "Foil" if c.get("foil") else "Non-Foil")
 
 
-def ejecutar(generar_cartas, config, logger, *, notificar=True, generar_excel=True,
+def _escribir_json(path, data):
+    """Escritura JSON atomica (tmp + replace): el backend nunca lee a medias."""
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _hacer_file_progress(job_path, config, cada_seg=0.5):
+    """on_progress que escribe progress.json (con throttle) para el modo job."""
+    counts = {
+        "oportunidad": 0, "no_encontrada": 0, "error": 0,
+        "match_sin_oportunidad": 0, "skip": 0,
+    }
+    ultimo = [0.0]
+
+    def on_progress(procesados, total, registro):
+        estado = registro.get("estado")
+        if estado in counts:
+            counts[estado] += 1
+
+        ahora = time.time()
+        # throttle: no escribir mas seguido que cada_seg (salvo el ultimo)
+        if ahora - ultimo[0] < cada_seg and procesados != total:
+            return
+        ultimo[0] = ahora
+
+        carta = registro.get("carta") or {}
+        _escribir_json(job_path / "progress.json", {
+            "nombre": config.nombre,
+            "procesados": procesados,
+            "total": total,
+            "oportunidades": counts["oportunidad"],
+            "no_encontradas": counts["no_encontrada"] + counts["error"],
+            "carta_actual": carta.get("nombre"),
+            "image_url": carta.get("image_url"),
+            "fase": "procesando",
+        })
+
+    return on_progress
+
+
+def ejecutar(generar_cartas, config, logger, *, notificar=None, generar_excel=None,
              on_progress=None, should_cancel=None) -> dict:
     logger.info(
         f"======================= INICIANDO {config.nombre} ======================="
     )
     inicio = time.time()
+
+    # Overrides por entorno: el backend los setea al lanzar el subproceso; el
+    # cron/manual usa los defaults. Un argumento explicito (no None) siempre gana.
+    if notificar is None:
+        notificar = os.getenv("PIRATA_NOTIFICAR", "1") == "1"
+    if generar_excel is None:
+        generar_excel = os.getenv("PIRATA_GENERAR_EXCEL", "1") == "1"
+
+    # Modo "job" (lo dispara el backend): progreso/cancelacion/resumen por
+    # archivos en PIRATA_JOB_DIR, que el backend lee y sirve al front. Si el
+    # caller ya paso on_progress/should_cancel, se respetan.
+    job_path = None
+    job_dir = os.getenv("PIRATA_JOB_DIR")
+    if job_dir:
+        job_path = Path(job_dir)
+        job_path.mkdir(parents=True, exist_ok=True)
+        if on_progress is None:
+            on_progress = _hacer_file_progress(job_path, config)
+        if should_cancel is None:
+            should_cancel = lambda: (job_path / "cancel.flag").exists()
+        # Progreso inicial: el scrape+enrich tarda antes del primer on_progress;
+        # deja que el front muestre "recolectando" mientras tanto.
+        _escribir_json(job_path / "progress.json", {
+            "nombre": config.nombre, "procesados": 0, "total": 0,
+            "oportunidades": 0, "no_encontradas": 0,
+            "carta_actual": None, "image_url": None, "fase": "recolectando",
+        })
 
     # ---- Cache SCG (compartido con botPrecios) ----
     cache_encontradas = cargar_cache_scg_manual(logger=logger)
@@ -144,7 +216,7 @@ def ejecutar(generar_cartas, config, logger, *, notificar=True, generar_excel=Tr
     if generar_excel and not cancelado:
         generar_reporte_excel(oportunidades, logger, enviar_telegram=notificar)
 
-    return {
+    resumen = {
         "nombre": config.nombre,
         "total_evaluadas": total_productos,
         "encontradas": total_productos - len(no_encontradas),
@@ -154,6 +226,11 @@ def ejecutar(generar_cartas, config, logger, *, notificar=True, generar_excel=Tr
         "cancelado": cancelado,
         "tiempo": _formatear_tiempo(time.time() - inicio),
     }
+
+    if job_path is not None:
+        _escribir_json(job_path / "resumen.json", resumen)
+
+    return resumen
 
 
 # =====================================================
