@@ -1,0 +1,20 @@
+[project]
+name = "pirata_core"
+version = "0.1.0"
+description = "Logica compartida de los bots piratas MTG (scraping -> SCG) - The Vault"
+requires-python = ">=3.10"
+
+dependencies = [
+    "requests",
+    "python-dotenv",
+    # Buscador_SCG no va aqui: no esta en PyPI y se instala aparte. En esta
+    # maquina ya esta en el Python global (Python313). Esta lista no se
+    # resuelve en la instalacion editable real.
+]
+
+[tool.setuptools.packages.find]
+include = ["pirata_core*"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
