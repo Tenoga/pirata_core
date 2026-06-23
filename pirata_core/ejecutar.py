@@ -61,12 +61,39 @@ def _key(c):
     return (c.get("scryfall_id"), "Foil" if c.get("foil") else "Non-Foil")
 
 
-def _escribir_json(path, data):
-    """Escritura JSON atomica (tmp + replace): el backend nunca lee a medias."""
+def _escribir_json(path, data, *, critico=False):
+    """Escritura JSON atomica (tmp + replace): el backend nunca lee a medias.
+
+    En Windows el os.replace falla transitoriamente (WinError 5/32) si otro
+    proceso tiene el destino o el .tmp abierto un instante: el backend leyendo
+    el archivo para el polling, o el antivirus escaneando el .tmp recien creado.
+    Es momentaneo -> se reintenta con backoff. progress.json es telemetria
+    best-effort: si aun asi no se puede escribir, se traga el error (jamas debe
+    tumbar un scrape de >1h por no poder escribir el progreso). resumen.json es
+    el resultado real (critico=True): se reintenta mas veces y, si todo falla,
+    se propaga para que el fallo sea visible."""
     tmp = Path(str(path) + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    intentos = 20 if critico else 8
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        for i in range(intentos):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:
+                if i == intentos - 1:
+                    raise
+                time.sleep(0.1 * (i + 1))   # backoff lineal: 0.1, 0.2, ...
+    except OSError:
+        if critico:
+            raise
+        try:
+            tmp.unlink()   # no dejar el .tmp huerfano
+        except OSError:
+            pass
+        return False
+    return False
 
 
 def _hacer_file_progress(job_path, config, cada_seg=0.5):
@@ -228,7 +255,7 @@ def ejecutar(generar_cartas, config, logger, *, notificar=None, generar_excel=No
     }
 
     if job_path is not None:
-        _escribir_json(job_path / "resumen.json", resumen)
+        _escribir_json(job_path / "resumen.json", resumen, critico=True)
 
     return resumen
 
