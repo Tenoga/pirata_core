@@ -64,3 +64,8 @@ class PirataConfig:
     cache_no_encontrada_dias: int = field(
         default_factory=lambda: _int_env("CACHE_NO_ENCONTRADA_EXPIRA_DIAS", 7)
     )
+    # Tope de mensajes Telegram por-carta de "no encontrada" (el resto se
+    # resume en un solo mensaje). Negativo = sin tope.
+    telegram_max_no_encontradas: int = field(
+        default_factory=lambda: _int_env("TELEGRAM_MAX_NO_ENCONTRADAS", 30)
+    )

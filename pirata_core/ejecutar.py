@@ -36,6 +36,17 @@ from .notifier import enviar_mensaje_telegram
 from .reporte import generar_reporte_excel
 
 
+class CorridaAbortada(Exception):
+    """
+    Un frontend (generar_cartas) la lanza para abortar la corrida completa con
+    motivo — ej. fallos masivos de enrich porque el sitio cambió su HTML/URLs.
+    ejecutar() la trata como fallo CONTROLADO: guarda caches, manda UNA alerta
+    a Telegram (en vez de spamear por-carta durante horas) y escribe el resumen
+    con el motivo, para que el job termine visible en el panel y no muera por
+    el tope de duración del backend.
+    """
+
+
 def _formatear_tiempo(segundos: float) -> str:
     h = int(segundos // 3600)
     m = int((segundos % 3600) // 60)
@@ -177,6 +188,7 @@ def ejecutar(generar_cartas, config, logger, *, notificar=None, generar_excel=No
     total_productos = 0
     procesados = 0
     cancelado = False
+    abortado = None
 
     try:
         for lote in generar_cartas(config, logger):
@@ -219,6 +231,9 @@ def ejecutar(generar_cartas, config, logger, *, notificar=None, generar_excel=No
                         on_progress(procesados, total_productos, {"estado": estado, "carta": resultado})
 
             print()
+    except CorridaAbortada as e:
+        abortado = str(e) or "abortada por el frontend"
+        logger.error(f"🛑 Corrida abortada: {abortado}")
     finally:
         logger.info("💾 Guardando caches en disco...")
         guardar_cache_scg_manual(cache_encontradas, logger=logger)
@@ -235,12 +250,23 @@ def ejecutar(generar_cartas, config, logger, *, notificar=None, generar_excel=No
         f"{len(oportunidades)} oportunidades / {len(no_encontradas)} no encontradas"
     )
 
-    if notificar and not cancelado:
+    if notificar and abortado:
+        enviar_mensaje_telegram(
+            None,
+            f"🛑 <b>{config.emoji} {config.nombre} ABORTADO</b>\n"
+            f"─────────────\n"
+            f"{abortado}\n\n"
+            f"📦 Cartas procesadas antes de abortar: {procesados}\n"
+            f"⏱️ Tiempo: {_formatear_tiempo(time.time() - inicio)}",
+        )
+        logger.info("📨 Alerta de aborto enviada a Telegram")
+
+    if notificar and not cancelado and not abortado:
         _enviar_oportunidades(oportunidades, logger)
         _enviar_no_encontradas(no_encontradas, config, logger)
         _enviar_resumen(config, total_productos, no_encontradas, oportunidades, inicio, logger)
 
-    if generar_excel and not cancelado:
+    if generar_excel and not cancelado and not abortado:
         generar_reporte_excel(oportunidades, logger, enviar_telegram=notificar)
 
     resumen = {
@@ -251,6 +277,7 @@ def ejecutar(generar_cartas, config, logger, *, notificar=None, generar_excel=No
         "oportunidades": len(oportunidades),
         "oportunidades_detalle": oportunidades,
         "cancelado": cancelado,
+        "abortado": abortado,
         "tiempo": _formatear_tiempo(time.time() - inicio),
     }
 
@@ -293,6 +320,19 @@ def _enviar_oportunidades(oportunidades, logger):
 
 
 def _enviar_no_encontradas(no_encontradas, config, logger):
+    # Cap anti-spam: una corrida degradada puede dejar MILES de no encontradas
+    # (0.3s+ por mensaje → horas de Telegram y el backend mata el job por
+    # tope de duración). Se manda hasta el tope y un mensaje con el total;
+    # el detalle completo queda en el log y en el cache de no encontradas.
+    total_real = len(no_encontradas)
+    tope = config.telegram_max_no_encontradas
+    if 0 <= tope < total_real:
+        no_encontradas = no_encontradas[:tope]
+        logger.warning(
+            f"✂️ No encontradas: {total_real} supera el tope Telegram ({tope}); "
+            f"se envían {tope} + resumen"
+        )
+
     logger.info(f"📨 Enviando {len(no_encontradas)} cartas no encontradas a Telegram")
     total = len(no_encontradas)
     inicio = time.time()
@@ -311,6 +351,15 @@ def _enviar_no_encontradas(no_encontradas, config, logger):
         time.sleep(0.3)
         _barra_progreso(idx, total, inicio, "📤 Telegram No encontradas")
     print()
+
+    if total_real > total:
+        enviar_mensaje_telegram(
+            None,
+            f"❌ <b>…y {total_real - total} cartas no encontradas más</b> "
+            f"(total: {total_real})\n"
+            f"{config.emoji} <b>Origen:</b> {config.nombre}\n"
+            f"El detalle completo queda en el log del bot.",
+        )
 
 
 def _enviar_resumen(config, total_productos, no_encontradas, oportunidades, inicio, logger):
