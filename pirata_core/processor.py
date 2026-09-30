@@ -67,7 +67,8 @@ def procesar_carta(carta, cache_encontradas, cache_no_encontradas, logger, confi
         ):
             log("⏭️ Skip por cache no encontrada")
             actualizar_uso_cache_no_encontrada(
-                scryfall_id, finish, cache_no_encontradas, logger
+                scryfall_id, finish, cache_no_encontradas, logger,
+                origen=config.nombre
             )
             return "skip", carta
 
@@ -111,6 +112,7 @@ def procesar_carta(carta, cache_encontradas, cache_no_encontradas, logger, confi
                 finish=finish,
                 cache=cache_no_encontradas,
                 logger=logger,
+                origen=config.nombre,
             )
 
             return "no_encontrada", carta

@@ -176,11 +176,32 @@ def cargar_cache_scg_no_encontradas(
             logger.exception(f"Error leyendo cache de no encontradas: {e}")
         return {}
 
+def _agregar_origen(entry: dict, origen) -> None:
+    """Acumula en entry['origenes'] la lista de bots que toparon esta carta:
+    una misma carta puede importar a varios (The Vault la vende Y una tienda
+    pirata también). El origen es de quién la registró primero, pero cada bot
+    que la SALTA por cache también se agrega, para que el panel filtre por
+    'cartas que a este bot le faltan'. Mantiene entry['origen'] = el primero
+    (backward-compat). Idempotente."""
+    if not origen:
+        return
+    origenes = entry.get("origenes")
+    if not isinstance(origenes, list):
+        # migrar de legacy origen(str) -> lista
+        origenes = [entry["origen"]] if entry.get("origen") else []
+    if origen not in origenes:
+        origenes.append(origen)
+    entry["origenes"] = origenes
+    if not entry.get("origen"):
+        entry["origen"] = origen
+
+
 def actualizar_uso_cache_no_encontrada(
     scryfall_id: str,
     finish: str,
     cache: dict,
-    logger=None
+    logger=None,
+    origen=None
 ) -> bool:
 
     if scryfall_id not in cache:
@@ -189,7 +210,9 @@ def actualizar_uso_cache_no_encontrada(
     if finish not in cache[scryfall_id]:
         return False
 
-    cache[scryfall_id][finish]["ultima_vez_usado"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = cache[scryfall_id][finish]
+    entry["ultima_vez_usado"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _agregar_origen(entry, origen)
 
     if logger:
         logger.debug(f"🔄 Cache no encontrada actualizado: {scryfall_id} ({finish})")
@@ -310,7 +333,8 @@ def registrar_no_encontrada_scg(
     collector_number: str,
     finish: str,
     cache: dict,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    origen: Optional[str] = None
 ) -> bool:
 
     if not scryfall_id:
@@ -326,6 +350,7 @@ def registrar_no_encontrada_scg(
         cache[scryfall_id] = {}
 
     if finish in cache[scryfall_id]:
+        _agregar_origen(cache[scryfall_id][finish], origen)
         if logger:
             logger.debug(f"⚠ Ya registrada como no encontrada: {scryfall_id} | {finish}")
         return True
@@ -334,6 +359,8 @@ def registrar_no_encontrada_scg(
         "titulo": titulo,
         "urls_intentadas": urls_intentadas,
         "comentario": f"No encontrada automáticamente | {titulo} | {expansion} | {collector_number}",
+        "origen": origen,
+        "origenes": [origen] if origen else [],
         "ultima_vez_usado": fecha_hora
     }
 
